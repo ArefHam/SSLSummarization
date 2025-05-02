@@ -22,7 +22,7 @@ CONFIG= {
     'hidden_dim': 200,
     'batch_size': 32,
     'eval_batch_size': 32,
-    'epoch': 300,
+    'epoch': 20,
     'random_seed': 1,
     'mask_pro': 0.15,
     'loss_margin': 0.5,

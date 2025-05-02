@@ -5,6 +5,7 @@ from config import CONFIG as conf
 import numpy as np
 import torch.nn.functional as F
 from attention import SimpleEncoder
+from transformers import BertTokenizer
 
 embedding_dim = conf['embedding_dim']
 hidden_dim = conf['hidden_dim']
@@ -12,6 +13,7 @@ device = conf['device']
 random_seed = conf['random_seed']
 
 torch.manual_seed(random_seed)
+BertTokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
 
 class Packed(nn.Module):
@@ -60,11 +62,11 @@ class BiLSTM(nn.Module):
         return permuted_hidden.view(-1, self.hidden_dim*2)
 
 class MyModel(nn.Module):
-    def __init__(self, my_vocab):
+    def __init__(self, my_tokenizer, bert_model):
         super(MyModel, self).__init__()
-        my_embed = my_vocab.embedding.idx_to_vec
-        self.sentence_encoder = BiLSTM(len(my_embed), my_embed.asnumpy())
-        self.self_attention = SimpleEncoder(hidden_dim*2, 4, 5)
+        self.tokenizer = my_tokenizer
+        self.bert = bert_model
+        self.self_attention = SimpleEncoder(768, 2, 2)  # <-- Change hidden_dim*2 to 768
 
     def pack_paragraph(self, paragraphs):
         paragraph_lengths = []
@@ -72,7 +74,6 @@ class MyModel(nn.Module):
         sentences = []
         for para in paragraphs:
             paragraph_lengths.append(len(para[1]))
-            #print(para[0])
             sentences += para[0]
             sentence_lengths += para[1]
         return paragraph_lengths, sentence_lengths, sentences
@@ -95,37 +96,30 @@ class MyModel(nn.Module):
         return masks.to(device)
 
     def encode_sentences(self, paragraphs):
-        paragraph_lengths, sentence_lengths, sentences = \
-            self.pack_paragraph(paragraphs)
-        batch_size = len(paragraph_lengths)
-        doc_size = max(paragraph_lengths)
-        #print(sentences)
-        padded_sentences = pad_sequence(sentences, padding_value=1).long().to(device)
-        sentence_embeds = self.sentence_encoder(padded_sentences,
-                                                sentence_lengths)
-        paragraph_embeds = self.unpack_paragraph(sentence_embeds,
-                                                 paragraph_lengths)
+        paragraph_lengths, sentence_lengths, sentences = self.pack_paragraph(paragraphs)
+        # Pad sentences to the same length
+        padded_sentences = pad_sequence(sentences, batch_first=True, padding_value=self.tokenizer.pad_token_id).to(device)
+        attention_mask = (padded_sentences != self.tokenizer.pad_token_id).long()
+        outputs = self.bert(input_ids=padded_sentences, attention_mask=attention_mask)
+        # Use CLS token as sentence embedding
+        sentence_embeds = outputs.last_hidden_state[:, 0, :]
+        paragraph_embeds = self.unpack_paragraph(sentence_embeds, paragraph_lengths)
         return paragraph_embeds, paragraph_lengths
 
     def forward(self, paragraphs, cand_pool=None):
-        #print(paragraph_embeds)
         batch_size = len(paragraphs)
         if cand_pool is not None:
-            paragraph_embeds, paragraph_lengths = \
-                self.encode_sentences(paragraphs+cand_pool)
+            paragraph_embeds, paragraph_lengths = self.encode_sentences(paragraphs + cand_pool)
             cand_pool_embeds = paragraph_embeds[batch_size:]
             paragraph_embeds = paragraph_embeds[:batch_size]
             paragraph_lengths = paragraph_lengths[:batch_size]
         else:
-            paragraph_embeds, paragraph_lengths = \
-                self.encode_sentences(paragraphs)
+            paragraph_embeds, paragraph_lengths = self.encode_sentences(paragraphs)
         doc_size = max(paragraph_lengths)
-        padded_paragraph_embeds = pad_sequence(paragraph_embeds,
-                                               batch_first=True)
+        padded_paragraph_embeds = pad_sequence(paragraph_embeds, batch_first=True)
         masks = self.mask_lengths(batch_size, doc_size, paragraph_lengths)
         outs = self.self_attention(padded_paragraph_embeds, masks)
         if cand_pool is not None:
             return outs, cand_pool_embeds
         else:
             return outs
-        #return paragraph_embeds, cand_pool_embeds

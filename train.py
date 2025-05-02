@@ -1,5 +1,5 @@
 from data_loader import get_train_dev_test_data, read_oracle, read_target_txt,\
-    read_target_20_news, read_data
+    read_target_20_news, read_data, load_dialogs_from_csv, split_customer_support
 from utils import build_vocab, build_paragraph, filter_output, mask_sentence,\
     replace_sentence, load_vocab, switch_sentence, local_sort_sentence, \
     get_fetch_idx
@@ -17,10 +17,12 @@ from tensorboardX import SummaryWriter
 from linearModel import LinearRegressionModel
 import random
 import itertools
+from tqdm import tqdm
 
 batch_size = conf['batch_size']
 num_epoch = conf['epoch']
 device = conf['device']
+print(f"Using device: {device}")
 learning_rate = conf['learning_rate']
 model_path = conf['model_path']
 random_seed = conf['random_seed']
@@ -135,7 +137,8 @@ def train(train_data, dev_data, my_vocab, train_target, dev_target):
     #model = None
     num_to_sort = 3
     cand_permuts = list(itertools.permutations(list(range(num_to_sort))))
-    model = MyModel(my_vocab)
+    from utils import tokenizer, bert_model
+    model = MyModel(tokenizer, bert_model)
     #model = nn.DataParallel(model)
     model = model.to(device)
     if model_to_load is not None:
@@ -144,7 +147,7 @@ def train(train_data, dev_data, my_vocab, train_target, dev_target):
     model_optim = optim.Adam(filter(lambda p: p.requires_grad,
                                     model.parameters()),
                              lr=learning_rate)
-    classification_layer = LinearRegressionModel(hidden_dim*2, 1)
+    classification_layer = LinearRegressionModel(768, 1)
     #classification_layer = LocalSorterModel(hidden_dim*2, num_to_sort)
     classification_layer = classification_layer.to(device)
     classifier_optim = optim.Adam(classification_layer.parameters(),
@@ -152,9 +155,8 @@ def train(train_data, dev_data, my_vocab, train_target, dev_target):
     best_acc = -1
     writer = SummaryWriter(exp_name)
     #print(len(train_data))
-    all_paragraphs = [build_paragraph(this_sample, my_vocab)
-                      for this_sample in train_data]
-    all_paragraph_lengths = [len(this_sample) for this_sample in train_data]
+    all_paragraphs = train_data
+    all_paragraph_lengths = [len(this_sample[0]) for this_sample in all_paragraphs]
     train_idx = list(range(len(train_data)))
     for epoch_i in range(num_epoch):
         #mask_loss = 0
@@ -168,7 +170,8 @@ def train(train_data, dev_data, my_vocab, train_target, dev_target):
         for i in range(min(10000, len(all_paragraphs))):
             sentence_cands += all_paragraphs[i][0]
         random.shuffle(train_idx)
-        for current_batch in range(int((len(train_data)-1)/batch_size) + 1):
+        # Use tqdm for the batch loop
+        for current_batch in tqdm(range(int((len(train_data)-1)/batch_size) + 1), desc=f"Epoch {epoch_i+1}/{num_epoch}"):
             if current_batch%100 ==0:
                 print(current_batch)
             model_optim.zero_grad()
@@ -225,15 +228,31 @@ def train(train_data, dev_data, my_vocab, train_target, dev_target):
         #writer.add_scalar('avg_sorter_loss', sorter_loss/total_batch, epoch_i)
 
 if __name__ == '__main__':
-    train_data, dev_data, test_data = \
-        get_train_dev_test_data(keep_single_sent=False)
-    #print(train_data[0])
-    #print(dev_data[0])
-    #print(test_data[0])
-    #my_vocab = build_vocab([train_data, dev_data, test_data])
-    my_vocab = load_vocab()
-    #train_target = read_target(train_tgt_file)
-    #dev_target = read_target(dev_tgt_file)
-    train_target = None
-    dev_target = None
-    train(train_data, dev_data, my_vocab, train_target, dev_target)
+    # train_data, dev_data, test_data = \
+    #     get_train_dev_test_data(keep_single_sent=False)
+    if conf['mode'] == 'pretrain':
+        # self-supervised on customer-support
+        # load *all* customer-support dialogs from a single CSV
+        all_cs_dialogs = load_dialogs_from_csv(conf['train_file'])
+        
+        # 80/10/10 split
+        train_dialogs, dev_dialogs, test_dialogs = split_customer_support(
+            all_cs_dialogs,
+            dev_ratio=0.2,
+            test_ratio=0,
+            seed=conf['random_seed']
+        )
+        my_vocab = load_vocab()
+        train_data = [build_paragraph(dialog, my_vocab) for dialog in train_dialogs]
+        dev_data = [build_paragraph(dialog, my_vocab) for dialog in dev_dialogs]
+        #train_target = read_target(train_tgt_file)
+        #dev_target = read_target(dev_tgt_file)
+        train_target = None
+        dev_target = None
+        train(train_data, dev_data, my_vocab, train_target, dev_target)
+        
+    elif conf['mode'] == 'summarize':
+        # fine-tune on TweetSumm
+        train_data, dev_data, test_data = get_train_dev_test_data()
+        train_summarizer(train_data, dev_data, ...)
+        evaluate_summarizer(test_data, ...)

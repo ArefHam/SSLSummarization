@@ -77,3 +77,89 @@ def read_target_20_news(file_name):
             line = line.strip()
             target.append(int(line))
     return target
+
+import csv
+from collections import defaultdict, deque
+
+def load_dialogs_from_csv(csv_path):
+    """
+    Loads dialogs from a Twitter CSV file, chaining tweets using both in_response_to_tweet_id and response_tweet_id.
+    Returns: List[List[str]] where each inner list is a dialog (list of utterances).
+    """
+    # Step 1: Parse CSV and build tweet dict
+    tweets = {}
+    children = defaultdict(list)
+    roots = set()
+    with open(csv_path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            tweet_id = row["tweet_id"]
+            tweets[tweet_id] = row
+            in_response_to = row.get("in_response_to_tweet_id", "")
+            if in_response_to:
+                children[in_response_to].append(tweet_id)
+            else:
+                roots.add(tweet_id)
+            # Also handle response_tweet_id (may be comma-separated list)
+            response_ids = row.get("response_tweet_id", "")
+            if response_ids:
+                for resp_id in response_ids.split(","):
+                    resp_id = resp_id.strip()
+                    if resp_id:
+                        children[tweet_id].append(resp_id)
+
+    # Step 2: Find all roots (tweets not replying to anyone)
+    for tweet_id in tweets:
+        in_response_to = tweets[tweet_id].get("in_response_to_tweet_id", "")
+        if in_response_to and in_response_to in tweets:
+            roots.discard(tweet_id)
+
+    # Step 3: Traverse each dialog tree (BFS for each root)
+    dialogs = []
+    visited = set()
+    for root_id in roots:
+        if root_id in visited:
+            continue
+        queue = deque()
+        queue.append((root_id, []))
+        while queue:
+            current_id, path = queue.popleft()
+            if current_id in visited:
+                continue
+            visited.add(current_id)
+            current_row = tweets[current_id]
+            current_text = current_row["text"]
+            new_path = path + [current_text]
+            # If no children, this is a leaf/dialog end
+            if not children[current_id]:
+                dialogs.append(new_path)
+            else:
+                for child_id in children[current_id]:
+                    if child_id in tweets:
+                        queue.append((child_id, new_path))
+    # Optionally, sort utterances in each dialog by timestamp
+    # (Assumes all tweets in a dialog are in correct order by traversal)
+    return dialogs
+
+import random
+
+def split_customer_support(dialogs, dev_ratio=0.1, test_ratio=0.1, seed=1):
+    """
+    Given a list of dialogs, randomly shuffle (with `seed`) and
+    return train/dev/test splits according to the given ratios.
+    """
+    random.seed(seed)
+    dialogs = dialogs[:]            # copy
+    random.shuffle(dialogs)
+
+    n = len(dialogs)
+    n_dev  = int(n * dev_ratio)
+    n_test = int(n * test_ratio)
+    n_train = n - n_dev - n_test
+
+    train = dialogs[:n_train]
+    dev   = dialogs[n_train:n_train + n_dev]
+    test  = dialogs[n_train + n_dev:]
+    return train, dev, test
+
+    

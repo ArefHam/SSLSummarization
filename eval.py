@@ -75,14 +75,18 @@ def evaluate_sorter(model, linear_layer, data, my_vocab, cand_permuts):
     return float(total_corrects)/total_samples
 
 def evaluate_switch(model, linear_layer, data, my_vocab):
-    all_paragraphs = [build_paragraph(this_sample, my_vocab)
-                      for this_sample in data]
-    all_paragraph_lengths = [len(this_sample) for this_sample in data]
+    all_paragraphs = data
+    all_paragraph_lengths = [len(this_sample) for this_sample in all_paragraphs]
     sentence_cands = []
-    for i in range(2000):
+    for i in range(len(all_paragraphs)):
+        # print(i)
+        # print(all_paragraphs)
+        # print(all_paragraph_lengths)
         sentence_cands += all_paragraphs[i][0]
+        # print('sennnnn', sentence_cands)
     total_corrects = 0
     total_samples = 0
+
     for current_batch in range(int((len(data)-1)/batch_size) + 1):
         paragraphs = all_paragraphs[current_batch*batch_size:
                                 (current_batch+1)*batch_size]
@@ -95,9 +99,33 @@ def evaluate_switch(model, linear_layer, data, my_vocab):
         embeds = embeds.view(-1, embed_dim)
         sigmoid = nn.Sigmoid()
         scores = sigmoid(linear_layer(embeds).view(this_batch_size, doc_size))
+
+        # after you get masks and new_batch_data
+        # print(f"\n--- DEBUG evaluate_switch batch {current_batch} ---")
+        # print(" # dialogs before drop:", len(paragraphs))
+        # print(" # dialogs after drop :", len(masks))
+        # print(" masks lengths         :", [m.size(0) for m in masks])
+
+        # after running the model
+        # print(" embeds shape          :", embeds.size())  # (batch, doc_size, emb)
+        # print(" flat_scores shape     :", scores.view(-1).shape)  # before filtering
+
+        # compute fresh_lengths
+        fresh_lengths = [len(m) for m in masks]
+        # print(" fresh_lengths         :", fresh_lengths)
+
         labels = torch.cat(masks).long().to(device)
-        scores = filter_output(scores.view(-1), paragraph_lengths)
+        # print(" labels shape          :", labels.shape)
+
+        # scores = filter_output(scores.view(-1), paragraph_lengths)
+        # CORRECT: use fresh_lengths that matches the masks
+        scores = filter_output(scores.view(-1), fresh_lengths)
+
+        # print(" filtered_scores shape :", scores.shape)
+
         preds = scores.ge(0.5).long().to(device)
+        # print(" preds shape           :", preds.shape)
+
         corrects = torch.sum(labels == preds)
         total_corrects += corrects
         total_samples += len(preds)
